@@ -1,3 +1,4 @@
+import re
 from ..settings import SOCKET_DIR
 from .packet import Packet, ExecPacket, OutputPacket, ErrorPacket, AckPacket, InputRequestPacket, InputResponsePacket
 from typing import Union
@@ -10,8 +11,10 @@ class PyshSocket:
         self.sock_path: Path = SOCKET_DIR / f"pysh-{sock_name}.sock"
         self._listen = listen
         self.sock = self.create_sock(listen)
+        self._other_sock: socket.socket | None = None
 
     def create_sock(self, listen: bool) -> socket.socket:
+        sock: socket.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         if listen:
             # ensure directory exists
             if not SOCKET_DIR.exists():
@@ -19,38 +22,60 @@ class PyshSocket:
             # remove existing socket file
             if self.sock_path.exists():
                 self.sock_path.unlink()
-            # create socket
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.bind(str(self.sock_path))
             sock.setblocking(False)
             sock.listen(1)
-            return sock
-        else:
-            if not self.sock_path.exists():
-                raise FileNotFoundError(f"Socket file {self.sock_path} does not exist.")
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            return sock
+        return sock
 
-    def accept(self) -> socket.socket | None:
+    @property
+    def connected(self) -> bool:
+        if self._other_sock is None:
+            return False
+        return self._other_sock.fileno() != -1
+
+    def accept(self) -> bool:
         if not self._listen:
             raise AttributeError("Cannot accept on a non-listening socket.")
         try:
-            client_sock, _ = self.sock.accept()
-            return client_sock
+            self._other_sock, _ = self.sock.accept()
+            return True
         except BlockingIOError:
             pass
+        return False
 
     def connect(self) -> None:
         if self._listen:
             raise AttributeError("Cannot connect on a listening socket.")
+        if not self.sock_path.exists():
+            raise FileNotFoundError(f"Socket file {self.sock_path} does not exist.")
         self.sock.connect(str(self.sock_path))
+
+    def disconnect(self) -> None:
+        if self._other_sock is not None:
+            self._other_sock.close()
+            self._other_sock = None
 
     def send(self, packet: Packet) -> None:
         self.sock.sendall(packet.json().encode())
 
+    def send_ack(self) -> None:
+        """
+        Send an AckPacket.
+        """
+        self.send(AckPacket())
+
+    def await_ack(self) -> None:
+        """
+        Wait for an AckPacket.
+        """
+        while True:
+            packet = self.recv()
+            if isinstance(packet, AckPacket):
+                return
+
     def recv(self) -> Union[Packet, type[Packet], None]:
         try:
-            data = self.sock.recv(4096)
+            data: bytes = self.sock.recv(4096)
         except BlockingIOError:
             return
 
@@ -59,6 +84,9 @@ class PyshSocket:
         return
 
     def close(self) -> None:
-        self.sock.close()
+        try:
+            self.sock.close()
+        except Exception:
+            pass
         if self._listen:
             self.sock_path.unlink()
