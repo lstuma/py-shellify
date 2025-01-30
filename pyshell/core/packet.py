@@ -34,22 +34,27 @@ class Packet:
 class ExecPacket(Packet):
     def __init__(self, code: str):
         super().__init__("exec", {"code": code})
+        self.code = code
 
 class OutputPacket(Packet):
     def __init__(self, stdout: str, stderr: str):
         super().__init__("output", {"stdout": stdout, "stderr": stderr})
+        self.stdout = stdout
+        self.stderr = stderr
 
 class InputRequestPacket(Packet):
-    def __init__(self, prompt: str):
+    def __init__(self):
         super().__init__("input_request", {})
 
 class InputResponsePacket(Packet):
     def __init__(self, response: str):
         super().__init__("input_response", {"response": response})
+        self.response = response
 
 class ErrorPacket(Packet):
-    def __init__(self, exception: Exception):
-        super().__init__("error", {"exception": str(exception)})
+    def __init__(self, exception: str):
+        super().__init__("error", {"exception": exception})
+        self.exception = exception
 
 class AckPacket(Packet):
     def __init__(self):
