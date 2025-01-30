@@ -15,6 +15,7 @@ setup(
     long_description=long_description,
     install_requires=[
         "psutil",
+        "rich",
     ],
     entry_points={
         "console_scripts": [

@@ -1,82 +1,73 @@
-from .execution import ExecutionResult, ExecutionScope
-from .settings import SOCKET_PREFIX
+from .packet import Packet, AckPacket, ErrorPacket, OutputPacket, ExecPacket, InputPacket, ClosePacket
+from .protocol import PyshSocket
+from .execution import Executor
 from psutil import Process
-import socket
-import sys
+from typing import Any
+import asyncio
+from time import sleep
+import rich
 import os
-from io import StringIO
-from json import loads
 
 class Handler:
-    def __init__(self, owner_pid: int, socket_name: str | None = None):
-        self.owner_pid: int = owner_pid
+    def __init__(self, owner_pid: int):
         self.owner: Process = Process(owner_pid)
+        self.sock_name = str(owner_pid)
 
-        if socket_name is None:
-            socket_name = str(owner_pid)
-        self.socket_path: str = f"{SOCKET_PREFIX}{socket_name}.sock"
-        self.sock: socket.socket = self.create_sock()
+        self.sock: PyshSocket = PyshSocket(self.sock_name, listen=True)
+        self.executor: Executor = Executor()
 
-        self.scope = ExecutionScope()
-
-    def create_sock(self) -> socket.socket:
-        if os.path.exists(self.socket_path):
-            raise FileExistsError(f"Socket file {self.socket_path} already exists.")
-        if not os.path.exists(os.path.dirname(self.socket_path)):
-            os.makedirs(os.path.dirname(self.socket_path))
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.bind(self.socket_path)
-        return sock
-
-    def execute(self, code: str) -> ExecutionResult:
+    async def execute(self, code: str) -> None:
         """
-        Executes the given code and returns the result.
+        Executes the given code while communicating with the client.
         """
-        original_stdout = sys.stdout
-        original_stderr = sys.stderr
-        new_stdout = StringIO()
-        new_stderr = StringIO()
-        exceptions = None
-        try:
-            sys.stdout = new_stdout
-            sys.stderr = new_stderr
-            exec(code, self.scope._globals, self.scope._locals)
-        except Exception as e:
-            exceptions = str(e)
-        finally:
-            sys.stdout = original_stdout
-            sys.stderr = original_stderr
-        return ExecutionResult(new_stdout.getvalue(), new_stderr.getvalue(), exceptions)
+        # start code execution
+        asyncio.create_task(self.executor.execute(code))
+        while not self.executor.done:
+            # send output to client
+            stdout, stderr = self.executor._stdout.getvalue(), self.executor._stderr.getvalue()
+            self.sock.send(OutputPacket(stdout, stderr))
+            self.sock.await_ack()
+            # receive data from client
+            packet = self.sock.recv()
+            if not packet:
+                continue
+            match(packet.action):
+                case "input":
+                    self.executor._input_queue.put_nowait(packet.stdin)
+                    self.sock.send_ack()
+                case "close":
+                    self.sock.disconnect()
+                    return
+                case _:
+                    packet = ErrorPacket(f"only input or close allowed: received {packet.action}")
+                    self.sock.send(packet)
+                    self.sock.disconnect()
 
     def run(self):
-        self.sock.listen()
-        self.sock.setblocking(False)
-        client_sock = None
         while self.owner.is_running():
-            if not client_sock:
-                try:
-                    client_sock, client_address = self.sock.accept()
-                except BlockingIOError:
-                    pass
+            if not self.sock.connected:
+                self.sock.accept()
             else:
                 try:
-                    data = client_sock.recv(4096)
-                    if data:
-                        result = self.execute(data.decode())
-                        client_sock.send(result.json().encode())
-                        client_sock.close()
-                        client_sock = None
-                except BlockingIOError:
-                    pass
+                    packet = self.sock.recv()
+                    if not packet:
+                        continue
+                    match(packet.action):
+                        case "exec":
+                            asyncio.run(self.execute(packet.code))
+                        case "close":
+                            self.sock.disconnect()
+                        case _:
+                            packet = ErrorPacket(f"only execs allowed: received {packet.action}")
+                            self.sock.send_ack()
+                    self.sock.disconnect()
                 except Exception as e:
-                    print("[Handler] Error:", e)
-                    client_sock.close()
-                    client_sock = None
+                    rich.print(f"[bold red]\\[Handler]Error:[/] {str(e)}")
+                    self.sock.disconnect()
         self.sock.close()
-        os.remove(self.socket_path)
 
     @classmethod
-    def fork(cls, owner_pid: int | None = None, socket_name: str | None = None) -> None:
+    def fork(cls, owner_pid: int | None = None) -> None:
         """
         Creates a new handler process and runs it.
 
@@ -86,6 +77,8 @@ class Handler:
         new_pid = os.fork()
         if new_pid == 0:
             # run handler in child process
-            handler = cls(owner_pid, socket_name)
+            handler = cls(owner_pid)
             handler.run()
-            sys.exit(0)
+            exit(0)
+        # wait for new process to start
+        sleep(0.1)

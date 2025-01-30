@@ -6,6 +6,9 @@ class Packet:
         self.action: str = action
         self.data: dict = data
 
+    def __repr__(self) -> str:
+        return self.json()
+
     def json(self) -> str:
         return json.dumps({
             "action": self.action,
@@ -22,12 +25,12 @@ class Packet:
                 return OutputPacket(**data)
             case "error":
                 return ErrorPacket(**data)
-            case "input_request":
-                return InputRequestPacket(**data)
-            case "input_response":
-                return InputResponsePacket(**data)
+            case "input":
+                return InputPacket(**data)
             case "ack":
                 return AckPacket(**data)
+            case "close":
+                return ClosePacket(**data)
             case _:
                 raise ValueError(f"Invalid action: {data['action']}")
 
@@ -42,20 +45,21 @@ class OutputPacket(Packet):
         self.stdout = stdout
         self.stderr = stderr
 
-class InputRequestPacket(Packet):
-    def __init__(self):
-        super().__init__("input_request", {})
-
-class InputResponsePacket(Packet):
-    def __init__(self, response: str):
-        super().__init__("input_response", {"response": response})
-        self.response = response
+class InputPacket(Packet):
+    def __init__(self, stdin: str):
+        super().__init__("input", {"stdin": stdin})
+        self.stdin = stdin
 
 class ErrorPacket(Packet):
     def __init__(self, exception: str):
+        exception = f"PROTOCOL ERROR [USUALLY CRITICAL]: {exception}"
         super().__init__("error", {"exception": exception})
         self.exception = exception
 
 class AckPacket(Packet):
     def __init__(self):
         super().__init__("ack", {})
+
+class ClosePacket(Packet):
+    def __init__(self):
+        super().__init__("close", {})
