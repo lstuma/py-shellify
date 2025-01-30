@@ -1,0 +1,5 @@
+build/
+py_shellify.egg-info/
+venv/
+
+
